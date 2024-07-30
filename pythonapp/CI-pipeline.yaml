@@ -1,0 +1,60 @@
+name: CI
+
+on: 
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  sca:
+    name: Scan source code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: anchore/scan-action@v3
+        with:
+          image-reference: "${{ github.repository }}:${{ github.sha }}"
+          dockerfile-path: ./Dockerfile
+          fail-build: false
+
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - run: |
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+      - run: |
+          docker build -t ${{ secrets.ECR_REGISTRY }}/app:${{ github.sha }} .
+          docker push ${{ secrets.ECR_REGISTRY }}/app:${{ github.sha }}
+
+  sast:
+    name: Run SAST scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: anchore/scan-action@v3
+        with:
+          image-reference: "${{ secrets.ECR_REGISTRY }}/app:${{ github.sha }}"
+          severity-cutoff: high
+          acs-report-enable: true
+
+  artifactscan:
+    name: Scan artifacts
+    runs-on: ubuntu-latest 
+    steps:
+      - uses: actions/checkout@v2
+      - uses: anchore/scan-action@v3
+        with:
+          path: ./artifacts
+          fail-build: false
+          acs-report-enable: true
