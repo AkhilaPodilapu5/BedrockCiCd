@@ -23,11 +23,11 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python 3.7
       uses: actions/setup-python@v2
       with:
-        python-version: ${{ matrix.python-version }}
-        
+        python-version: 3.7
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -35,9 +35,8 @@ jobs:
 
     - name: Build
       run: |
-        python setup.py sdist bdist_wheel
-
-
+        python setup.py install
+    
   sca:
 
     runs-on: ubuntu-latest
@@ -48,31 +47,27 @@ jobs:
     - name: Run SCA
       uses: anchore/scan-action@v3
       with:
-        image: myimage:latest
+        image: myimage
         acs-report-enable: true
-        
 
   artifactscan:
 
     runs-on: ubuntu-latest
 
-    steps:
+    steps:  
     - uses: actions/checkout@v2
     
-    - name: Download artifacts
-      uses: actions/download-artifact@v2
-
     - name: Scan artifacts
-      uses: anchore/scan-action@v3
+      uses: anchore/sbom-action@v0
       with:
-        path: ./artifacts
+        image: myimage
+        artifact-dir: ./artifacts
         acs-report-enable: true
-
-
-  push-to-ecr:
+        
+  deploy:
 
     runs-on: ubuntu-latest
-
+    
     steps:
     
     - name: Configure AWS credentials
@@ -85,11 +80,12 @@ jobs:
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
-
+      
     - name: Build, tag, and push image to Amazon ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
+        ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+        IMAGE_TAG: ${{ env.IMAGE_TAG }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
