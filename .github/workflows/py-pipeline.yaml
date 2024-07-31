@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Run SCA scan
         uses: anchore/scan-action@v3
@@ -23,12 +23,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.7' 
+          python-version: '3.9' 
 
       - name: Install dependencies
         run: |
@@ -44,9 +44,9 @@ jobs:
     name: Scan build artifacts
     needs: build
     runs-on: ubuntu-latest
-    steps:    
+    steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Download build artifact
         uses: actions/download-artifact@v3
@@ -57,7 +57,7 @@ jobs:
       - name: Scan build artifacts
         uses: anchore/scan-action@v3
         with:
-          path: "build"
+          path: "build/*"
           fail-build: false
           
   sast:
@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         
       - name: Run SAST scan
         uses: anchore/scan-action@v3
@@ -82,24 +82,26 @@ jobs:
       ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
       ECR_REPOSITORY: myapp
       IMAGE_TAG: ${{ github.sha }}
+      
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: GitHubActions
-          
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+    - name: Checkout
+      uses: actions/checkout@v2
 
-      - name: Checkout code
-        uses: actions/checkout@v2
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions
+        aws-region: us-east-1
 
-      - name: Build, tag, and push image to Amazon ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
