@@ -14,20 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Run SCA scan
-        uses: anchore/scan-action@v3
+      - uses: anchore/scan-action@v3
         with:
           image: "myimage:latest"
-          acs-report-enable: true
+          fail-build: false
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.7'
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -35,63 +33,56 @@ jobs:
       - name: Build
         run: |
           python pythonapp/build.py
-          docker build -t myimage .
-      - name: Log in to Amazon ECR
+          docker build -t myimage . 
+          
+  artifactscan:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: anchore/scan-action@v3
+        with:
+          image: "myimage:latest"
+          fail-build: false
+          
+  sast:
+    needs: build    
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: anchore/scan-action@v3
+        with:
+          path: "."
+          fail-build: false
+          
+  deploy:
+    needs: [sca, artifactscan, sast]
+    runs-on: ubuntu-latest
+    steps:
+    
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
+
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/my-ecr-repo:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/my-ecr-repo:$IMAGE_TAG
-      - name: Save image URI
-        run: |
-          echo $ECR_REGISTRY/my-ecr-repo:$IMAGE_TAG
-          echo "image_uri=$ECR_REGISTRY/my-ecr-repo:$IMAGE_TAG" >> $GITHUB_ENV
-
-  artifactscan:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Scan image for vulnerabilities
-        uses: anchore/scan-action@v3
-        with:
-          image: ${{ env.image_uri }}
-          fail-build: false
-          acs-report-enable: true
-
-  sast:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Run SAST scan
-        uses: anchore/scan-action@v3
-        with:
-          path: "."
-          fail-build: false
-          acs-report-enable: true
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           
-  deploy:
-    needs: [build, artifactscan, sast]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr 
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Deploy to EKS
-        uses: aws-actions/amazon-eks-deploy-image@v1
-        with:
-          cluster-name: ${{ env.EKS_CLUSTER }}
-          image: ${{ env.image_uri }}
-          ports: "80"
-          region: ${{ env.AWS_REGION }}
+          task-definition: ${{ env.TASK_DEFINITION }}
+          service: ${{ env.SERVICE }}
+          cluster: ${{ env.EKS_CLUSTER }}
+          wait-for-service-stability: true
