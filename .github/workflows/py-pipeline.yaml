@@ -27,25 +27,38 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
+        
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
+          
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
       - name: Build, tag, and push image to Amazon ECR
+        id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           
+      - name: Download kubeconfig
+        run: |
+          aws eks --region ${{ env.AWS_REGION }} update-kubeconfig --name ${{ env.CLUSTER_NAME }}
+          kubectl config view --raw > kubeconfig.yaml
+          
+      - name: Upload kubeconfig to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: kubeconfig
+          path: kubeconfig.yaml
+
   artifactscan:
     name: Artifact Scan
     needs: build
@@ -54,12 +67,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Scan image in ECR with Anchore
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: image
+          path: .
+          
+      - name: Scan image for vulnerabilities
         uses: anchore/scan-action@v3
         with:
-          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           fail-build: false
-          acs-report-enable: true
 
   sast:
     name: SAST
@@ -74,56 +92,43 @@ jobs:
         with:
           path: "."
           fail-build: false
-          acs-report-enable: true
-
-  dast:
-    name: DAST
-    needs: deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Run DAST
-        uses: anchore/scan-action@v3
-        with:
-          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          fail-build: false
-          acs-report-enable: true
-          severity-cutoff: high
 
   deploy:
     name: Deploy
     needs: [artifactscan, sast]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
+    
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Save Kubernetes context
-        id: save-context
-        uses: aws-actions/amazon-eks-save-context@v1
+      - name: Download kubeconfig
+        uses: actions/download-artifact@v3
         with:
-          cluster-name: ${{ env.CLUSTER_NAME }}
-          role-arn: ${{ secrets.AWS_ROLE_ARN }}
-
-      - name: Download context
-        uses: aws-actions/amazon-eks-load-context@v1
-        with:
-          path: ${{ steps.save-context.outputs.kubeconfig_path }}
-
+          name: kubeconfig
+          path: .
+          
       - name: Deploy to EKS
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          kubectl set image deployment/my-deployment my-container=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          export KUBECONFIG=./kubeconfig.yaml
+          kubectl apply -f deployment.yaml
+          kubectl rollout status deployment/myapp-deployment
+
+  dast:
+    name: DAST Scan
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+    
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run DAST scan
+        uses: anchore/scan-action@v3
+        with:
+          path: "."
+          fail-build: false
+          severity-cutoff: high
